@@ -1,5 +1,9 @@
+# IBVS Simulation Dependencies
+# Drake-based image-based visual servoing for Kuka IIWA + Schunk WSG
 
-numpy>=1.20.0,<2.3.0  
-drake>=1.46.0
-matplotlib>=3.5.0  
+# Core dependencies
+numpy>=1.20.0,<2.3.0  # OpenCV requires numpy < 2.3.0
+opencv-python>=4.5.0
+drake>=1.46.0  # Drake can be installed via pip: pip install drake
+matplotlib>=3.5.0  # For visualization and debugging
 
