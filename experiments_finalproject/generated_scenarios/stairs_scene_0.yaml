@@ -1,0 +1,108 @@
+
+directives:
+- add_model:
+    name: iiwa
+    file: package://drake_models/iiwa_description/sdf/iiwa7_no_collision.sdf
+    default_joint_positions:
+        iiwa_joint_1: [0.0]
+        iiwa_joint_2: [0.5]
+        iiwa_joint_3: [0.0]
+        iiwa_joint_4: [-1.9]
+        iiwa_joint_5: [0.0]
+        iiwa_joint_6: [0.65]
+        iiwa_joint_7: [1.7]
+- add_weld:
+    parent: world
+    child: iiwa::iiwa_link_0
+    X_PC:
+        translation: [-0.25, 0.0, 0.0]
+- add_model:
+    name: wsg
+    file: package://manipulation/hydro/schunk_wsg_50_with_tip.sdf
+- add_weld:
+    parent: iiwa::iiwa_link_7
+    child: wsg::body
+    X_PC:
+        translation: [0.0, 0.0, 0.114]
+        rotation: !Rpy { deg: [90.0, 0.0, 90.0] }
+- add_model:
+    name: table
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/amazon_table.sdf
+- add_weld:
+    parent: world
+    child: table::amazon_table
+    X_PC:
+        translation: [0.3257, 0.0, -0.0127]
+# - add_model:
+#     name: cupboard
+#     file: package://manipulation/hydro/cupboard.sdf
+# - add_weld:
+#     parent: world
+#     child: cupboard::cupboard_body
+#     X_PC:
+#         translation: [0.9057, 0.0, 0.4148]
+#         rotation: !Rpy { deg: [0.0, 0.0, 180.0] }
+- add_model:
+    name: gripper_camera
+    file: package://manipulation/camera_box.sdf
+- add_weld:
+    parent: wsg::body
+    child: gripper_camera::base
+    X_PC:
+        translation: [0.0, 0.04, 0.0]
+        rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+
+# Normal brick below gripper position
+- add_model:
+    name: start_block
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick.sdf
+    default_free_body_pose:
+        base_link:
+            base_frame: world
+            translation: [0.400, 0.000, 0.025]
+            rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+
+# Stairs: blocks organized as steps (more staggered in x, each touching the previous)
+# Step 1 (bottom step - top flush with table at z=0.1, base_link at z=0.0)
+- add_model:
+    name: step_block_1
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    default_free_body_pose:
+        base_link:
+            base_frame: world
+            translation: [0.500, 0.000, 0.0]
+            rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+# Step 2 (bottom touches step 1 top at z=0.1, so base_link at z=0.1, top at z=0.2)
+- add_model:
+    name: step_block_2
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    default_free_body_pose:
+        base_link:
+            base_frame: world
+            translation: [0.650, 0.000, 0.1]
+            rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+# Step 3 (bottom touches step 2 top at z=0.2, so base_link at z=0.2, top at z=0.3)
+- add_model:
+    name: step_block_3
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    default_free_body_pose:
+        base_link:
+            base_frame: world
+            translation: [0.800, 0.000, 0.2]
+            rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+# Step 4 (bottom touches step 3 top at z=0.3, so base_link at z=0.3, top at z=0.4)
+- add_model:
+    name: step_block_4
+    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    default_free_body_pose:
+        base_link:
+            base_frame: world
+            translation: [0.950, 0.000, 0.3]
+            rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
+
+model_drivers:
+  iiwa: !IiwaDriver
+    control_mode: position_only
+    hand_model_name: wsg
+  wsg: !SchunkWsgDriver {}
+
