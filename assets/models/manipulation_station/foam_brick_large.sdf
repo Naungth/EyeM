@@ -1,0 +1,103 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <model name="foam_brick_large">
+    <link name="base_link">
+      <inertial>
+        <pose>0 0 0.05 0 0 0</pose>
+        <mass>0.336</mass>
+        <inertia>
+          <ixx>1.4e-3</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>9.1e-4</iyy>
+          <iyz>0</iyz>
+          <izz>1.75e-3</izz>
+        </inertia>
+      </inertial>
+      <visual name="base_link">
+        <pose>0 0 0.05 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.15 0.2 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <diffuse>0.2 0.6 0.8 1.0</diffuse>
+        </material>
+      </visual>
+      <collision name="box_collision">
+        <pose>0 0 0.05 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.148 0.198 0.098</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="point_collision1">
+        <pose>0.075 0.1 0 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision2">
+        <pose>0.075 -0.1 0 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision3">
+        <pose>-0.075 0.1 0 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision4">
+        <pose>-0.075 -0.1 0 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision5">
+        <pose>0.075 0.1 0.1 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision6">
+        <pose>0.075 -0.1 0.1 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision7">
+        <pose>-0.075 0.1 0.1 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+      <collision name="point_collision8">
+        <pose>-0.075 -0.1 0.1 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>1e-7</radius>
+          </sphere>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>
+
