@@ -15,6 +15,8 @@ Each state sets a different u_desired or feature set.
 For now, just scaffold the interface.
 """
 
+import os
+import manipulation
 import numpy as np
 from pydrake.all import (
     DiagramBuilder,
@@ -330,6 +332,10 @@ def build_ibvs_diagram():
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.0)
     parser = Parser(plant, scene_graph)
     
+
+    manipulation_models_path = os.path.join(os.path.dirname(manipulation.__file__), "models")
+    parser.package_map().Add("manipulation", manipulation_models_path)
+    
     # Add IIWA
     iiwa_model = parser.AddModelsFromUrl(
         "package://drake_models/iiwa_description/sdf/iiwa14_no_collision.sdf"
@@ -339,13 +345,16 @@ def build_ibvs_diagram():
         plant.GetFrameByName("iiwa_link_0", iiwa_model)
     )
     
-    # Add Schunk WSG gripper
+    # Add Schunk WSG gripper (matching stairs_scene_0.yaml)
     wsg_model = parser.AddModelsFromUrl(
-        "package://drake_models/wsg_50_description/sdf/schunk_wsg_50.sdf"
+        "package://manipulation/hydro/schunk_wsg_50_with_tip.sdf"
     )[0]
     iiwa_ee_frame = plant.GetFrameByName("iiwa_link_7", iiwa_model)
     wsg_base_frame = plant.GetFrameByName("body", wsg_model)
-    X_WSG_EE = RigidTransform(p=[0, 0, 0.114])
+    # Match the transform from stairs_scene_0.yaml: translation [0, 0, 0.114] and rotation [90, 0, 90] degrees
+    from pydrake.all import RollPitchYaw
+    rpy = RollPitchYaw(np.deg2rad([90.0, 0.0, 90.0]))  # Roll, Pitch, Yaw in degrees
+    X_WSG_EE = RigidTransform(rpy.ToRotationMatrix(), p=[0, 0, 0.114])
     plant.WeldFrames(iiwa_ee_frame, wsg_base_frame, X_WSG_EE)
     
     # Create a model instance for environment objects (cube)
@@ -482,7 +491,7 @@ def build_ibvs_diagram():
             image_width=640, 
             image_height=480,
             depth_ema_alpha=0.6,  # EMA smoothing (0-1, higher = more responsive)
-            depth_min_m=0.15,     # Minimum valid depth
+            depth_min_m=0.01,     # Minimum valid depth (matches DepthRange)
             depth_max_m=2.0       # Maximum valid depth
         )
     )
