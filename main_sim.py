@@ -276,7 +276,7 @@ class JointVelocityController(LeafSystem):
             plant_context = self.plant.GetMyContextFromRoot(root_context)
             
             # Solve for joint velocities with joint limits enforced
-            qdot = solve_ik_qdot(
+            qdot_all = solve_ik_qdot(
                 self.plant, 
                 plant_context, 
                 Vee_des, 
@@ -284,6 +284,14 @@ class JointVelocityController(LeafSystem):
                 max_velocity=1.5,  # Maximum joint velocity in rad/s
                 enforce_position_limits=True
             )
+            
+            # Only use IIWA joint velocities (first 7 joints)
+            # Set gripper joint velocities to zero to prevent gripper from moving/disconnecting
+            num_actuators = self.plant.num_actuators()
+            qdot = np.zeros(num_actuators)
+            num_iiwa_joints = min(7, len(qdot_all), num_actuators)
+            qdot[:num_iiwa_joints] = qdot_all[:num_iiwa_joints]
+            # Gripper joints (if any) remain at zero
             
             # Debug: check if we're outputting non-zero velocities when twist is zero
             qdot_mag = np.linalg.norm(qdot)
@@ -357,20 +365,22 @@ def build_ibvs_diagram():
     X_WSG_EE = RigidTransform(rpy.ToRotationMatrix(), p=[0, 0, 0.114])
     plant.WeldFrames(iiwa_ee_frame, wsg_base_frame, X_WSG_EE)
     
-    # Add a small marker at the camera pose so it's visible in Meshcat
-    # Must match the mount in cameras.py: 20cm forward, 0cm lateral, 10cm up, 0 deg pitch (straight forward)
-    camera_rpy = RollPitchYaw(0, 0, 0)
-    camera_p = np.array([0.20, 0.0, 0.10]).reshape(3, 1)
-    X_camera_EE = RigidTransform(camera_rpy, camera_p)
-    camera_marker_color = np.array([0.1, 0.8, 1.0, 0.9])
-    # Use diffuse color directly (RegisterVisualGeometry expects 4D color, not IllustrationProperties)
-    plant.RegisterVisualGeometry(
-        iiwa_ee_frame.body(),  # Register on the end-effector body
-        X_camera_EE,
-        Sphere(0.015),
-        "camera_marker",
-        camera_marker_color,
-    )
+    # Toggle camera marker visualization in Meshcat
+    show_camera_marker = True
+    if show_camera_marker:
+        # Must match the mount in cameras.py: 20cm forward, 0cm lateral, 10cm up, 0 deg pitch (straight forward)
+        camera_rpy = RollPitchYaw(0, 0, 0)
+        camera_p = np.array([0.20, 0.0, 0.10]).reshape(3, 1)
+        X_camera_EE = RigidTransform(camera_rpy, camera_p)
+        camera_marker_color = np.array([0.1, 0.8, 1.0, 0.9])
+        # Use diffuse color directly (RegisterVisualGeometry expects 4D color, not IllustrationProperties)
+        plant.RegisterVisualGeometry(
+            iiwa_ee_frame.body(),  # Register on the end-effector body
+            X_camera_EE,
+            Sphere(0.015),
+            "camera_marker",
+            camera_marker_color,
+        )
 
     # Create a model instance for environment objects (cube)
     env_model_instance = plant.AddModelInstance("Environment")
@@ -400,7 +410,7 @@ def build_ibvs_diagram():
     plant.RegisterVisualGeometry(cube_body, cube_geometry)
     
     # Weld cube to world at desired position
-    cube_position = np.array([0.3, 0.2, cube_size / 2]).reshape(3, 1)  # On the ground
+    cube_position = np.array([0, 1, cube_size / 2]).reshape(3, 1)  # On the ground
     cube_pose = RigidTransform(cube_position)
     plant.WeldFrames(plant.world_frame(), cube_body.body_frame(), cube_pose)
     
@@ -651,14 +661,20 @@ def main():
     
     # Initial joint positions (home position)
     # Start with IIWA positions
-    q0_iiwa = np.array([-1.57, 0.1, 0, -1.2, 0, 1.6, 0])
+    q0_iiwa = np.array([-0.92, 0.08, -0.34, 0.76, -0.28, -1.5, 0])
     
-    # Pad with zeros for gripper and any other positions
+    # Pad with zeros for gripper and any oßther positions
     q0 = np.zeros(num_pos)
     q0[:7] = q0_iiwa  # Set IIWA positions
     # Remaining positions (gripper, etc.) stay at zero
+    # This ensures gripper joints (if any) are initialized to zero
     
     plant.SetPositions(plant_context, q0)
+    
+    # Explicitly set gripper joint velocities to zero to prevent detachment
+    # (Gripper base is welded, but finger joints might exist and need to be controlled)
+    qdot0 = np.zeros(plant.num_velocities())
+    plant.SetVelocities(plant_context, qdot0)
     
     # Set initial velocities to zero
     plant.SetVelocities(plant_context, np.zeros(plant.num_velocities()))
