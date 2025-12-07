@@ -139,9 +139,9 @@ def add_eye_in_hand_camera(
             - image_converter: The CameraImageConverter system
     """
     # Camera pose relative to end-effector
-    # Position camera slightly forward and looking down
-    rpy = RollPitchYaw(0, np.pi/6, 0)  # Pitch down 30 degrees
-    p = np.array([0.05, 0, 0.02]).reshape(3, 1)  # 5cm forward, 2cm up
+    # Position camera looking straight forward
+    rpy = RollPitchYaw(0, 0, 0)  # No rotation - looking straight forward
+    p = np.array([0.20, 0.0, 0.10]).reshape(3, 1)  # 20cm forward, 0cm lateral, 10cm up
     X_Camera_EE = RigidTransform(rpy, p)
     
     # Create render engine

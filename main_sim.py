@@ -326,7 +326,7 @@ def build_ibvs_diagram():
     
     # Build the station environment (plant, scene_graph, table, cube)
     from pydrake.all import AddMultibodyPlantSceneGraph, Box, GeometryInstance
-    from pydrake.all import MakePhongIllustrationProperties, Parser, RigidTransform
+    from pydrake.all import MakePhongIllustrationProperties, Parser, RigidTransform, Sphere
     from pydrake.all import SceneGraph, SpatialInertia, UnitInertia
     
     plant, scene_graph = AddMultibodyPlantSceneGraph(builder, time_step=0.0)
@@ -357,6 +357,21 @@ def build_ibvs_diagram():
     X_WSG_EE = RigidTransform(rpy.ToRotationMatrix(), p=[0, 0, 0.114])
     plant.WeldFrames(iiwa_ee_frame, wsg_base_frame, X_WSG_EE)
     
+    # Add a small marker at the camera pose so it's visible in Meshcat
+    # Must match the mount in cameras.py: 20cm forward, 0cm lateral, 10cm up, 0 deg pitch (straight forward)
+    camera_rpy = RollPitchYaw(0, 0, 0)
+    camera_p = np.array([0.20, 0.0, 0.10]).reshape(3, 1)
+    X_camera_EE = RigidTransform(camera_rpy, camera_p)
+    camera_marker_color = np.array([0.1, 0.8, 1.0, 0.9])
+    # Use diffuse color directly (RegisterVisualGeometry expects 4D color, not IllustrationProperties)
+    plant.RegisterVisualGeometry(
+        iiwa_ee_frame.body(),  # Register on the end-effector body
+        X_camera_EE,
+        Sphere(0.015),
+        "camera_marker",
+        camera_marker_color,
+    )
+
     # Create a model instance for environment objects (cube)
     env_model_instance = plant.AddModelInstance("Environment")
     
@@ -418,7 +433,7 @@ def build_ibvs_diagram():
         CameraFeatureVisualizer(
             N_features=N_features,
             save_dir="camera_screenshots",  # Directory to save screenshots
-            save_interval=0.5  # Save every 0.5 seconds
+            save_interval=0.25  # Save every 0.25 seconds
         )
     )
     
@@ -431,6 +446,9 @@ def build_ibvs_diagram():
         feature_tracker.features_output,
         camera_visualizer.features_input
     )
+    
+    # Connect desired features to visualizer (for error visualization)
+    # This will be connected after desired_features is created below
     
     # Add IBVS controller with DLS and DOF mask (following real-world patterns)
     # DOF mask: [vx, vy, vz, wx, wy, wz] - 1.0 to enable, 0.0 to disable
@@ -476,12 +494,24 @@ def build_ibvs_diagram():
             state_machine.desired_features_output,
             ibvs_controller.desired_uv_input
         )
+        
+        # Connect desired features to visualizer for error visualization
+        builder.Connect(
+            state_machine.desired_features_output,
+            camera_visualizer.desired_features_input
+        )
     else:
         # Use simple desired features source (current implementation)
         desired_features = builder.AddSystem(DesiredFeaturesSource(N_features=N_features))
         builder.Connect(
             desired_features.get_output_port(0),
             ibvs_controller.desired_uv_input
+        )
+        
+        # Connect desired features to visualizer for error visualization
+        builder.Connect(
+            desired_features.get_output_port(0),
+            camera_visualizer.desired_features_input
         )
     
     # Add depth estimator with EMA filtering (following real-world patterns)
@@ -517,11 +547,11 @@ def build_ibvs_diagram():
 
     use_eye_in_hand_transform = True  # Set to False to disable transform
     eih_rx_deg = 0.0    # Roll in degrees (matches cameras.py)
-    eih_ry_deg = 30.0   # Pitch in degrees (matches cameras.py: np.pi/6 = 30°)
+    eih_ry_deg = 0.0    # Pitch in degrees (matches cameras.py: 0° = straight forward)
     eih_rz_deg = 0.0    # Yaw in degrees (matches cameras.py)
-    eih_tx = 0.05       # Translation x (meters) - 5cm forward (matches cameras.py)
-    eih_ty = 0.0        # Translation y (meters) - matches cameras.py
-    eih_tz = 0.02       # Translation z (meters) - 2cm up (matches cameras.py)
+    eih_tx = 0.20       # Translation x (meters) - 20cm forward (matches cameras.py)
+    eih_ty = 0.0        # Translation y (meters) - 0cm lateral (matches cameras.py)
+    eih_tz = 0.10       # Translation z (meters) - 10cm up (matches cameras.py)
     
     if use_eye_in_hand_transform:
         # Create eye-in-hand adjoint transform

@@ -59,6 +59,12 @@ class CameraFeatureVisualizer(LeafSystem):
             size=2 * N_features
         )
         
+        # Optional input port for desired features (for error visualization)
+        self.desired_features_input = self.DeclareVectorInputPort(
+            "desired_features",
+            size=2 * N_features
+        )
+        
         # Output port: visualized image (optional, for display)
         self.visualized_output = self.DeclareAbstractOutputPort(
             "visualized_image",
@@ -75,81 +81,169 @@ class CameraFeatureVisualizer(LeafSystem):
         )
     
     def _get_image_and_features(self, context):
-        """Helper to get image and features from inputs."""
+        """Helper to get image, current features, and desired features from inputs."""
         # Get input image
         image_value = self.image_input.Eval(context)
         
         # Convert to numpy array
         if isinstance(image_value, ImageRgba8U):
             if image_value.size() == 0:
-                return None, None
+                return None, None, None
             
             image_array = np.array(image_value.data).reshape(
                 image_value.height(), image_value.width(), 4
             )[:, :, :3]  # Drop alpha channel, keep RGB
         else:
-            return None, None
+            return None, None, None
         
-        # Get features
+        # Get current features
         features_flat = self.features_input.Eval(context)
         features = features_flat.reshape(self.N_features, 2)  # (N, 2) array of [u, v]
         
-        return image_array, features
+        # Get desired features (optional - may not be connected)
+        desired_features = None
+        try:
+            desired_features_flat = self.desired_features_input.Eval(context)
+            desired_features = desired_features_flat.reshape(self.N_features, 2)  # (N, 2) array
+        except:
+            # Desired features not connected, that's okay
+            pass
+        
+        return image_array, features, desired_features
     
     def _visualize(self, context, output):
         """Visualize features on camera image (for output port)."""
-        image_array, features = self._get_image_and_features(context)
+        image_array, features, desired_features = self._get_image_and_features(context)
         
         if image_array is None:
             output.set_value(ImageRgba8U())
             return
         
         # Process and save (reuse the same logic)
-        self._process_and_save(context, image_array, features, output)
+        self._process_and_save(context, image_array, features, desired_features, output)
     
     def _publish_visualization(self, context):
         """Periodic publish event to ensure visualization runs even if output isn't connected."""
-        image_array, features = self._get_image_and_features(context)
+        image_array, features, desired_features = self._get_image_and_features(context)
         
         if image_array is None:
             return
         
         # Process and save (without setting output)
-        self._process_and_save(context, image_array, features, None)
+        self._process_and_save(context, image_array, features, desired_features, None)
     
-    def _process_and_save(self, context, image_array, features, output):
+    def _process_and_save(self, context, image_array, features, desired_features, output):
         """Process image with features and optionally save screenshot."""
         # Convert RGB to BGR for OpenCV drawing
         image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
         
-        # Draw blue dots at feature locations
-        blue_color = (255, 0, 0)  # BGR format: blue
+        # Colors (BGR format)
+        current_color = (255, 0, 0)    # Blue for current features
+        desired_color = (0, 255, 0)    # Green for desired features
+        text_color = (255, 255, 255)   # White for text
+        
         dot_radius = 5
         dot_thickness = -1  # Filled circle
         
+        # Calculate total error magnitude if desired features are available
+        sum_squared_errors = 0.0
+        valid_error_count = 0
+        
+        if desired_features is not None:
+            for i in range(self.N_features):
+                u, v = features[i, 0], features[i, 1]
+                u_des, v_des = desired_features[i, 0], desired_features[i, 1]
+                
+                # Only calculate error if both current and desired features are valid
+                if u > 0 and v > 0 and u_des > 0 and v_des > 0:
+                    error_squared = (u - u_des)**2 + (v - v_des)**2
+                    sum_squared_errors += error_squared
+                    valid_error_count += 1
+        
+        # Calculate RMS error (root mean square)
+        if valid_error_count > 0:
+            rms_error = np.sqrt(sum_squared_errors / valid_error_count)
+        else:
+            rms_error = 0.0
+        
+        # Draw desired features first (so they appear behind current features)
+        if desired_features is not None:
+            for i in range(self.N_features):
+                u_des, v_des = desired_features[i, 0], desired_features[i, 1]
+                
+                # Only draw if desired feature is valid (non-zero)
+                if u_des > 0 and v_des > 0:
+                    u_des_int = int(np.round(u_des))
+                    v_des_int = int(np.round(v_des))
+                    
+                    # Draw desired feature as green circle
+                    cv2.circle(image_bgr, (u_des_int, v_des_int), dot_radius, desired_color, dot_thickness)
+                    
+                    # Draw desired feature label
+                    cv2.putText(
+                        image_bgr,
+                        f"D{i+1}",
+                        (u_des_int + 8, v_des_int - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.35,
+                        desired_color,
+                        1,
+                        cv2.LINE_AA
+                    )
+        
+        # Draw current features
         for i in range(self.N_features):
             u, v = features[i, 0], features[i, 1]
             
             # Only draw if feature is valid (non-zero)
             if u > 0 and v > 0:
-                # Convert to integer coordinates
                 u_int = int(np.round(u))
                 v_int = int(np.round(v))
                 
-                # Draw filled circle
-                cv2.circle(image_bgr, (u_int, v_int), dot_radius, blue_color, dot_thickness)
+                # Draw current feature as blue circle
+                cv2.circle(image_bgr, (u_int, v_int), dot_radius, current_color, dot_thickness)
                 
-                # Optional: Draw feature number
+                # Draw current feature number
                 cv2.putText(
                     image_bgr,
                     str(i + 1),
                     (u_int + 8, v_int + 8),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
-                    blue_color,
+                    current_color,
                     1,
                     cv2.LINE_AA
                 )
+        
+        # Display error magnitude in top-left corner
+        if desired_features is not None and valid_error_count > 0:
+            error_text = f"RMS Error: {rms_error:.2f} px"
+            # Draw text with background for better visibility
+            text_size = cv2.getTextSize(error_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            text_x, text_y = 10, 30
+            
+            # Draw semi-transparent background rectangle
+            overlay = image_bgr.copy()
+            cv2.rectangle(
+                overlay,
+                (text_x - 5, text_y - text_size[1] - 5),
+                (text_x + text_size[0] + 5, text_y + 5),
+                (0, 0, 0),
+                -1
+            )
+            cv2.addWeighted(overlay, 0.6, image_bgr, 0.4, 0, image_bgr)
+            
+            # Draw error text
+            cv2.putText(
+                image_bgr,
+                error_text,
+                (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                text_color,
+                2,
+                cv2.LINE_AA
+            )
         
         # Save screenshot if enabled
         if self.save_dir is not None:
