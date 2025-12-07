@@ -514,34 +514,41 @@ def build_ibvs_diagram():
         ibvs_controller.depth_input
     )
     
-    # Eye-in-hand transform: map camera twist to end-effector twist
-    # Camera is mounted on end-effector, so we need to transform the twist
-    # Default: camera aligned with EE, no translation offset
-    # Can be configured with rotation/translation if camera is offset
+
     use_eye_in_hand_transform = True  # Set to False to disable transform
-    eih_rx_deg = 0.0   # Roll in degrees
-    eih_ry_deg = 0.0   # Pitch in degrees  
-    eih_rz_deg = -90.0 # Yaw in degrees (typical: -90 for camera looking down)
-    eih_tx = 0.0       # Translation x (meters)
-    eih_ty = 0.0       # Translation y (meters)
-    eih_tz = 0.0       # Translation z (meters)
+    eih_rx_deg = 0.0    # Roll in degrees (matches cameras.py)
+    eih_ry_deg = 30.0   # Pitch in degrees (matches cameras.py: np.pi/6 = 30°)
+    eih_rz_deg = 0.0    # Yaw in degrees (matches cameras.py)
+    eih_tx = 0.05       # Translation x (meters) - 5cm forward (matches cameras.py)
+    eih_ty = 0.0        # Translation y (meters) - matches cameras.py
+    eih_tz = 0.02       # Translation z (meters) - 2cm up (matches cameras.py)
     
     if use_eye_in_hand_transform:
         # Create eye-in-hand adjoint transform
+        # NOTE: X_Camera_EE in cameras.py is the transform from EE to Camera
+        # We need the inverse (Camera to EE) for the adjoint transform
         from transforms import euler_rpy_to_rotation
-        R_e_c = euler_rpy_to_rotation(
+        # Rotation from EE to Camera (as defined in cameras.py)
+        R_ee_cam = euler_rpy_to_rotation(
             np.deg2rad(eih_rx_deg),
             np.deg2rad(eih_ry_deg),
             np.deg2rad(eih_rz_deg)
         )
-        t_e_c = np.array([eih_tx, eih_ty, eih_tz], dtype=float)
-        Ad_e_c = adjoint_transform(R_e_c, t_e_c)
+        t_ee_cam = np.array([eih_tx, eih_ty, eih_tz], dtype=float)
+        
+        # Inverse transform: from Camera to EE
+        R_cam_ee = R_ee_cam.T  # Inverse rotation
+        t_cam_ee = -R_ee_cam.T @ t_ee_cam  # Inverse translation
+        
+        # Adjoint transform: transforms twist from Camera to EE
+        # adjoint_transform(R, t) where R and t are from source to target
+        Ad_cam_ee = adjoint_transform(R_cam_ee, t_cam_ee)
         
         # Create a system to apply the adjoint transform
         class EyeInHandTransform(LeafSystem):
-            def __init__(self, Ad_e_c):
+            def __init__(self, Ad_cam_ee):
                 LeafSystem.__init__(self)
-                self.Ad_e_c = Ad_e_c
+                self.Ad_cam_ee = Ad_cam_ee
                 self.twist_input = self.DeclareVectorInputPort("twist_camera", size=6)
                 self.twist_output = self.DeclareVectorOutputPort(
                     "twist_ee", size=6, calc=self._transform
@@ -549,10 +556,10 @@ def build_ibvs_diagram():
             
             def _transform(self, context, output):
                 v_cam = self.twist_input.Eval(context)
-                v_ee = self.Ad_e_c @ v_cam
+                v_ee = self.Ad_cam_ee @ v_cam
                 output.SetFromVector(v_ee)
         
-        eih_transform = builder.AddSystem(EyeInHandTransform(Ad_e_c))
+        eih_transform = builder.AddSystem(EyeInHandTransform(Ad_cam_ee))
         builder.Connect(ibvs_controller.velocity_output, eih_transform.twist_input)
         twist_source = eih_transform.twist_output
     else:

@@ -172,7 +172,7 @@ def add_eye_in_hand_camera(
     )
     
     # Create depth range for depth camera
-    depth_range = DepthRange(0.1, 5.0)  # 10cm to 5m range
+    depth_range = DepthRange(0.01, 5.0)  # 1cm to 5m range
     
     # Create depth render camera
     depth_camera = DepthRenderCamera(camera_core, depth_range)
