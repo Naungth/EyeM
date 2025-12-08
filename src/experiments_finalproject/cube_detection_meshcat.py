@@ -168,7 +168,7 @@ def detect_cube(
     }
 
 
-def _add_overhead_camera(builder, scene_graph, camera_xy=(0.5, 0.2), camera_z=.75):
+def _add_overhead_camera(builder, scene_graph, camera_xy=(0.5, 0.3), camera_z=.75):
     """World-mounted top-down camera looking straight down at the table."""
     # Renderer
     renderer_name = "vtk_renderer_overhead"
@@ -244,6 +244,69 @@ def build_diagram(scene_path: Path, use_overhead: bool):
 
     diagram = builder.Build()
     return diagram, rgbd_sensor, meshcat
+
+
+def capture_and_detect(
+    scene: str | Path | None = None,
+    use_overhead: bool = True,
+    hsv_lower=(0, 30, 30),
+    hsv_upper=(25, 255, 255),
+    hsv_lower2=(160, 30, 30),
+    hsv_upper2=(180, 255, 255),
+    min_area_frac: float = 0.0003,
+    center_bias: float = 0.001,
+    save_path: Path | None = None,
+):
+    """
+    One-shot capture + detect helper for programmatic use.
+
+    Returns a tuple (result_dict, meshcat_url) where result_dict includes
+    bbox, rotated_box, angle_deg, centroid, depth_m, and vis (RGB for logging).
+    """
+    available = sorted(p.name for p in SCENARIO_DIR.glob("*.yaml"))
+    if not available:
+        raise FileNotFoundError(f"No YAML files in {SCENARIO_DIR}")
+    scene_name = scene if scene is not None else DEFAULT_SCENE
+    if isinstance(scene_name, Path):
+        scene_path = scene_name
+    else:
+        if scene_name not in available:
+            raise FileNotFoundError(f"Scene '{scene_name}' not found. Available: {available}")
+        scene_path = SCENARIO_DIR / scene_name
+
+    diagram, rgbd_sensor, meshcat = build_diagram(scene_path, use_overhead=use_overhead)
+    context = diagram.CreateDefaultContext()
+    diagram.ForcedPublish(context)
+
+    sensor_context = rgbd_sensor.GetMyContextFromRoot(context)
+    rgb_img = rgbd_sensor.color_image_output_port().Eval(sensor_context)
+    depth_img = rgbd_sensor.depth_image_32F_output_port().Eval(sensor_context)
+
+    rgb = drake_image_to_rgb(rgb_img)
+    depth = drake_depth_to_array(depth_img)
+
+    lower = np.array(hsv_lower, dtype=np.uint8)
+    upper = np.array(hsv_upper, dtype=np.uint8)
+    lower2 = np.array(hsv_lower2, dtype=np.uint8) if hsv_lower2 else None
+    upper2 = np.array(hsv_upper2, dtype=np.uint8) if hsv_upper2 else None
+
+    result = detect_cube(
+        rgb,
+        depth,
+        lower,
+        upper,
+        lower2,
+        upper2,
+        min_area_frac=float(min_area_frac),
+        center_bias=float(center_bias),
+    )
+
+    if save_path:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(save_path), cv2.cvtColor(result["vis"], cv2.COLOR_RGB2BGR))
+
+    return result, meshcat.web_url()
 
 
 def main():

@@ -1,4 +1,1 @@
-/*                         # Ignore everything at repo root
-!/src/                     # Keep src folder
-!/src/**                   # Keep contents under src
-!.gitignore                # Keep this ignore file
+/camera_screenshots/
