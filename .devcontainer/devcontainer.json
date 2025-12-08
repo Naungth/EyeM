@@ -3,7 +3,7 @@
     "image": "russtedrake/manipulation:90658e5",
     "forwardPorts": [7000, 7001, 7002, 8000, 8888],
     "portsAttributes": {
-      "7000": { "label": "MeshCat", "onAutoForward": "notify" },
+      "7000": { "label": "MeshCat", "onAutoForward": "openBrowser" },
       "7001": { "label": "MeshCat", "onAutoForward": "notify" },
       "7002": { "label": "MeshCat", "onAutoForward": "notify" },
       "8000": { "label": "MeshCat", "onAutoForward": "notify" },

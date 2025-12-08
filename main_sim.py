@@ -679,9 +679,12 @@ def main():
     # Set initial velocities to zero
     plant.SetVelocities(plant_context, np.zeros(plant.num_velocities()))
     
-    print("Running simulation for 5 seconds...")
+    # Allow long-running Meshcat visualization: clamp to 300-600 seconds
+    run_duration = float(os.getenv("MESH_CAT_DURATION_SEC", "300"))
+    run_duration = np.clip(run_duration, 300.0, 600.0)
+    print(f"Running simulation for {run_duration:.0f} seconds...")
     simulator.set_target_realtime_rate(1.0)
-    simulator.AdvanceTo(5.0)
+    simulator.AdvanceTo(run_duration)
     
     print("Simulation complete!")
 
