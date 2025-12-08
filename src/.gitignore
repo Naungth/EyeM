@@ -1,0 +1,8 @@
+# Python cache
+__pycache__/
+
+# Prototype directory
+prototype/
+
+# Camera screenshots
+camera_screenshots/

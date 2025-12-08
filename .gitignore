@@ -1,8 +1,4 @@
-# Python cache
-__pycache__/
-
-# Prototype directory
-prototype/
-
-# Camera screenshots
-camera_screenshots/
+/*                         # Ignore everything at repo root
+!/src/                     # Keep src folder
+!/src/**                   # Keep contents under src
+!.gitignore                # Keep this ignore file
