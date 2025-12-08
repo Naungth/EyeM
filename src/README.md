@@ -34,14 +34,27 @@ This project implements a closed-loop, image-driven controller that drives the I
 
 ## Usage
 
-Run the main simulation:
+Run the main simulation (uses venv Python if available):
 ```bash
-python main_sim.py
+python src/main_sim.py --scene stairs_scene_0.yaml --sim-time 5.0
 ```
+
+### Scene loading
+- Scenes live in `src/experiments_finalproject/generated_scenarios/` as YAML.
+- Use `--scene <file.yaml>` to pick a scenario; defaults to the first YAML found.
+- Station is built directly from the scenario directives (`LoadScenario`).
+
+### Meshcat
+- Meshcat auto-starts; URL is printed (e.g., `http://localhost:7000`).
+- Port overrides are ignored in this Drake build; it binds to the default port.
+
+### Visuals & logging
+- Camera overlay frames save to `src/camera_screenshots/` (e.g., `camera_view_*.png`).
+- Verbose q̇ prints come from `JointVelocityController`; silence by commenting prints in `main_sim.py` if desired.
 
 ## Project Structure
 
-- `main_sim.py` - Main entry point, orchestrates the complete IBVS control loop
+- `main_sim.py` - Main entry; IBVS loop + scenario-based scene loading + Meshcat
 - `cameras.py` - Eye-in-hand RGB-D camera system
 - `features.py` - Feature extraction and tracking
 - `ibvs_controller.py` - IBVS control law implementation
