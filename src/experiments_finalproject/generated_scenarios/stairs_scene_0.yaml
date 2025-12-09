@@ -27,7 +27,7 @@ directives:
         rotation: !Rpy { deg: [90.0, 0.0, 90.0] }
 - add_model:
     name: table
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/amazon_table.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/amazon_table.sdf
 - add_weld:
     parent: world
     child: table::amazon_table
@@ -55,7 +55,7 @@ directives:
 # Normal brick below gripper position
 - add_model:
     name: start_block
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick.sdf
     default_free_body_pose:
         base_link:
             base_frame: world
@@ -66,7 +66,7 @@ directives:
 # Step 1 (bottom step - top flush with table at z=0.1, base_link at z=0.0)
 - add_model:
     name: step_block_1
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick_large.sdf
     default_free_body_pose:
         base_link:
             base_frame: world
@@ -75,7 +75,7 @@ directives:
 # Step 2 (bottom touches step 1 top at z=0.1, so base_link at z=0.1, top at z=0.2)
 - add_model:
     name: step_block_2
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick_large.sdf
     default_free_body_pose:
         base_link:
             base_frame: world
@@ -84,7 +84,7 @@ directives:
 # Step 3 (bottom touches step 2 top at z=0.2, so base_link at z=0.2, top at z=0.3)
 - add_model:
     name: step_block_3
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick_large.sdf
     default_free_body_pose:
         base_link:
             base_frame: world
@@ -93,7 +93,7 @@ directives:
 # Step 4 (bottom touches step 3 top at z=0.3, so base_link at z=0.3, top at z=0.4)
 - add_model:
     name: step_block_4
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick_large.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick_large.sdf
     default_free_body_pose:
         base_link:
             base_frame: world

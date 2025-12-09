@@ -15,6 +15,7 @@ from pydrake.all import (
     DiagramBuilder,
     ImageDepth32F,
     JacobianWrtVariable,
+    AddMultibodyPlantSceneGraph,
     LeafSystem,
     Simulator,
     VectorSystem,
@@ -22,6 +23,7 @@ from pydrake.all import (
     RigidTransform,
     RollPitchYaw,
     Solve,
+    ZeroOrderHold,
 )
 from pydrake.multibody.inverse_kinematics import InverseKinematics
 from pydrake.multibody.parsing import ModelDirectives, Parser, ProcessModelDirectives
@@ -34,6 +36,7 @@ if str(SRC_DIR) not in sys.path:
 from cameras import add_eye_in_hand_camera  # noqa: E402
 from features import FeatureTracker  # noqa: E402
 from ibvs_controller import IBVSController  # noqa: E402
+from state_machine import IBVSStateMachine  # noqa: E402
 from transforms import adjoint_transform, euler_rpy_to_rotation  # noqa: E402
 from experiments_finalproject.cube_detection_meshcat import capture_and_detect  # noqa: E402
 
@@ -213,7 +216,7 @@ class JointVelocityController(LeafSystem):
             if self.root_context_ref is not None and self.root_context_ref[0] is not None:
                 root_context = self.root_context_ref[0]
             if root_context is None:
-                print("[ROBOT_COMMAND] WARNING: No root context available. Outputting zeros.", flush=True)
+                #print("[ROBOT_COMMAND] WARNING: No root context available. Outputting zeros.", flush=True)
                 output.SetFromVector(np.zeros(self.plant.num_actuators()))
                 return
 
@@ -287,16 +290,15 @@ class JointVelocityController(LeafSystem):
                 print(f"[JOINT_VEL_CONTROLLER] WARN: zero twist but non-zero qdot (mag={qdot_mag:.2e})")
                 self._nonzero_qdot_warned = True
 
-            print(f"[ROBOT_COMMAND] Sending qdot: mag={qdot_mag:.6f}, qdot={qdot_cmd}", flush=True)
+            #print(f"[ROBOT_COMMAND] Sending qdot: mag={qdot_mag:.6f}, qdot={qdot_cmd}", flush=True)
             output.SetFromVector(qdot_cmd)
         except Exception as e:
-            print(f"[ROBOT_COMMAND] ERROR in _calc_qdot: {e}", flush=True)
+            #print(f"[ROBOT_COMMAND] ERROR in _calc_qdot: {e}", flush=True)
             output.SetFromVector(np.zeros(self.plant.num_actuators()))
 
 
 def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected_depth=None):
     builder = DiagramBuilder()
-    from pydrake.all import AddMultibodyPlantSceneGraph
 
     scene_path = _resolve_scene(scene_name)
     scenario = LoadScenario(filename=str(scene_path))
@@ -331,24 +333,69 @@ def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected
     builder.Connect(rgbd_sensor.color_image_output_port(), camera_visualizer.image_input)
     builder.Connect(feature_tracker.features_output, camera_visualizer.features_input)
 
-    dof_mask = np.array([1, 1, 1, 0, 0, 0])
+    # Add IBVS controller (DOF mask will come from state machine)
     ibvs_controller = builder.AddSystem(
         IBVSController(
             N_features=N_features,
             lambda_gain=1000.0,
-            error_threshold=10.0,
+            error_threshold=10.0,  # Base threshold (states can override)
             convergence_window=10,
             dls_lambda=0.01,
-            dof_mask=dof_mask,
+            dof_mask=np.ones(6)  # Default: all DOFs enabled (will be overridden by state machine)
         )
     )
     builder.Connect(feature_tracker.features_output, ibvs_controller.current_uv_input)
 
-    if detected_uv is not None:
-        desired_features = builder.AddSystem(DetectedFeaturesSource(list(detected_uv), N_features=N_features))
+    # Add state machine (dictionary-based hierarchical control)
+    use_state_machine = True  # Enable state machine for multi-stage control
+    
+    if use_state_machine:
+        state_machine = builder.AddSystem(IBVSStateMachine(N_features=N_features))
+        
+        # Connect current features to state machine (for state transitions)
+        builder.Connect(
+            feature_tracker.features_output,
+            state_machine.current_features_input
+        )
+        
+        # Connect convergence flag from IBVS controller to state machine
+        # Add ZeroOrderHold to break algebraic loop (converged output is direct feedthrough)
+        converged_zoh = builder.AddSystem(ZeroOrderHold(period_sec=0.01, vector_size=1))
+        builder.Connect(ibvs_controller.converged_output, converged_zoh.get_input_port())
+        builder.Connect(converged_zoh.get_output_port(), state_machine.converged_input)
+        
+        # Connect desired features from state machine to IBVS controller
+        builder.Connect(
+            state_machine.desired_features_output,
+            ibvs_controller.desired_uv_input
+        )
+        
+        # Connect desired features to visualizer for error display
+        builder.Connect(
+            state_machine.desired_features_output,
+            camera_visualizer.desired_features_input
+        )
+        
+        # Connect state name to visualizer for state display
+        builder.Connect(
+            state_machine.state_name_output,
+            camera_visualizer.state_name_input
+        )
+        
+        # Connect DOF mask from state machine to IBVS controller (dynamic control)
+        builder.Connect(
+            state_machine.dof_mask_output,
+            ibvs_controller.dof_mask_input
+        )
     else:
-        desired_features = builder.AddSystem(DesiredFeaturesSource(N_features=N_features))
-    builder.Connect(desired_features.get_output_port(0), ibvs_controller.desired_uv_input)
+        # Use simple desired features source (fallback, no state machine)
+        if detected_uv is not None:
+            desired_features = builder.AddSystem(DetectedFeaturesSource(list(detected_uv), N_features=N_features))
+        else:
+            desired_features = builder.AddSystem(DesiredFeaturesSource(N_features=N_features))
+        builder.Connect(desired_features.get_output_port(0), ibvs_controller.desired_uv_input)
+        # Connect desired features to visualizer for error display
+        builder.Connect(desired_features.get_output_port(0), camera_visualizer.desired_features_input)
 
     depth_estimator = builder.AddSystem(
         DepthEstimator(

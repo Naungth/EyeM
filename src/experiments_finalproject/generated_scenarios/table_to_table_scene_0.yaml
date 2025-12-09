@@ -46,7 +46,7 @@ directives:
 
 - add_model:
     name: start_table
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/amazon_table.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/amazon_table.sdf
 - add_weld:
     parent: world
     child: start_table::amazon_table
@@ -55,7 +55,7 @@ directives:
         rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
 - add_model:
     name: goal_table
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/amazon_table.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/amazon_table.sdf
 - add_weld:
     parent: world
     child: goal_table::amazon_table
@@ -64,7 +64,7 @@ directives:
         rotation: !Rpy { deg: [0.0, 0.0, 0.0] }
 - add_model:
     name: table_object_0
-    file: file:///workspaces/RoboManip/src/assets/models/manipulation_station/foam_brick.sdf
+    file: file:///Users/naung/RM/src/manipulation_station/foam_brick.sdf
     default_free_body_pose:
         base_link:
             base_frame: world

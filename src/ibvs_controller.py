@@ -90,6 +90,12 @@ class IBVSController(LeafSystem):
             size=N_features
         )
         
+        # Optional input: dynamic DOF mask (if not connected, uses constructor default)
+        self.dof_mask_input = self.DeclareVectorInputPort(
+            "dof_mask",
+            size=6
+        )
+        
         # Output port: 6D spatial velocity (twist)
         self.velocity_output = self.DeclareVectorOutputPort(
             "desired_spatial_velocity",
@@ -136,7 +142,7 @@ class IBVSController(LeafSystem):
         
         return L
     
-    def compute_twist(self, L, error, lam=None):
+    def compute_twist(self, L, error, lam=None, dof_mask=None):
         """
         Compute desired spatial velocity from interaction matrix and error.
         
@@ -151,6 +157,7 @@ class IBVSController(LeafSystem):
             L: Interaction matrix (2N, 6)
             error: Feature error vector (2N,)
             lam: Control gain (defaults to self.lambda_gain)
+            dof_mask: Optional DOF mask (if None, uses self.dof_mask)
         
         Returns:
             numpy array: (6,) desired spatial velocity
@@ -158,12 +165,16 @@ class IBVSController(LeafSystem):
         if lam is None:
             lam = self.lambda_gain
         
+        # Use provided mask or default
+        if dof_mask is None:
+            dof_mask = self.dof_mask
+        
         # Apply DOF mask: only use enabled degrees of freedom
-        allowed_idx = np.where(self.dof_mask > 0.5)[0]
+        allowed_idx = np.where(dof_mask > 0.5)[0]
         if allowed_idx.size == 0:
             # All DOFs disabled - return zero velocity
             if not hasattr(self, '_dof_mask_warned'):
-                print(f"[IBVS] WARNING: All DOFs disabled (mask={self.dof_mask}), returning zero velocity")
+                print(f"[IBVS] WARNING: All DOFs disabled (mask={dof_mask}), returning zero velocity")
                 self._dof_mask_warned = True
             return np.zeros(6)
         
@@ -192,6 +203,15 @@ class IBVSController(LeafSystem):
         desired_uv = self.desired_uv_input.Eval(context)
         depth_estimates = self.depth_input.Eval(context)
         
+        # Get DOF mask (use dynamic input if connected, otherwise use default)
+        try:
+            dynamic_mask = self.dof_mask_input.Eval(context)
+            # Always use dynamic mask if input is connected (even if all zeros)
+            active_dof_mask = dynamic_mask
+        except:
+            # Input not connected, use default from constructor
+            active_dof_mask = self.dof_mask
+        
         # Reshape to (N, 2)
         current_uv_2d = current_uv.reshape(self.N_features, 2)
         desired_uv_2d = desired_uv.reshape(self.N_features, 2)
@@ -216,19 +236,6 @@ class IBVSController(LeafSystem):
         valid_desired_uv = desired_uv_2d[valid_mask]
         valid_Z = depth_estimates[valid_mask]
         valid_error = (valid_uv - valid_desired_uv).flatten()
-        
-        # DEBUG: Print feature positions and errors periodically
-        if not hasattr(self, '_debug_counter'):
-            self._debug_counter = 0
-        self._debug_counter += 1
-        if self._debug_counter % 50 == 0:  # Print every 50 steps
-            import sys
-            print(f"[IBVS_DEBUG] Step {self._debug_counter}:")
-            print(f"  Current features: {current_uv_2d}")
-            print(f"  Desired features: {desired_uv_2d}")
-            print(f"  Error (current - desired): {error.reshape(self.N_features, 2)}")
-            print(f"  Error magnitude: {np.linalg.norm(valid_error):.2f} pixels")
-            sys.stdout.flush()
         
         # Check if error is below threshold (stopping condition)
         # Compute RMS error in pixels
@@ -258,15 +265,8 @@ class IBVSController(LeafSystem):
         # Compute interaction matrix
         L = self.compute_interaction_matrix(valid_uv, valid_Z)
         
-        # Compute twist
-        v = self.compute_twist(L, valid_error)
-        
-        # DEBUG: Print computed velocity
-        if self._debug_counter % 50 == 0:
-            import sys
-            print(f"  Computed twist: {v}")
-            print(f"  Twist magnitude: {np.linalg.norm(v):.4f}")
-            sys.stdout.flush()
+        # Compute twist with active DOF mask
+        v = self.compute_twist(L, valid_error, dof_mask=active_dof_mask)
         
         # Debug: check if DOF mask is causing zero output
         if np.allclose(v, 0) and not np.allclose(self.dof_mask, 0):

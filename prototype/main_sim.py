@@ -38,7 +38,8 @@ from cameras import add_eye_in_hand_camera
 from features import FeatureTracker
 from ibvs_controller import IBVSController
 from jacobians import solve_ik_qdot
-from state_machine import IBVSStateMachine, IBVSState
+from state_machine import IBVSStateMachine
+from ibvs_states import IBVSState
 from transforms import adjoint_transform, euler_rpy_to_rotation
 
 from pydrake.all import AbstractValue, ImageDepth32F, PortSwitch
@@ -439,20 +440,16 @@ def build_ibvs_diagram(
         camera_visualizer.features_input
     )
     
-    # Add IBVS controller with DLS and DOF mask (following real-world patterns)
-    # DOF mask: [vx, vy, vz, wx, wy, wz] - 1.0 to enable, 0.0 to disable
-    # Example: [1,1,1,0,0,0] = only translation, no rotation
-    # NOTE: Setting all to 0 should disable all movement (for testing)
-    dof_mask = np.array([1, 0, 0, 0, 0, 0])  # All DOFs enabled
-    
+    # Add IBVS controller (DOF mask will come from state machine)
+    # Default DOF mask is all enabled, but will be overridden by state machine
     ibvs_controller = builder.AddSystem(
         IBVSController(
             N_features=N_features, 
             lambda_gain=1000.0,
-            error_threshold=10.0,  # Stop when feature error < 10 pixels (RMS)
+            error_threshold=10.0,  # Base threshold (states can override)
             convergence_window=10,  # Require 10 consecutive frames below threshold
             dls_lambda=0.01,  # DLS regularization (higher = more damping, more robust)
-            dof_mask=dof_mask  # Control which DOFs are active
+            dof_mask=np.ones(6)  # Default: all DOFs enabled (will be overridden by state machine)
         )
     )
     
@@ -462,33 +459,53 @@ def build_ibvs_diagram(
         ibvs_controller.current_uv_input
     )
     
-    # Add state machine (for future hierarchical control)
-    # For now, we can use either the simple DesiredFeaturesSource or the state machine
-    use_state_machine = False  # Set to True to enable state machine
+    # Add state machine (dictionary-based hierarchical control)
+    use_state_machine = True  # Enable state machine for multi-stage control
     
     if use_state_machine:
         state_machine = builder.AddSystem(IBVSStateMachine(N_features=N_features))
-        # Connect feature error to state machine
+        
+        # Connect current features to state machine (for state transitions)
         builder.Connect(
             feature_tracker.features_output,
-            state_machine.error_input
+            state_machine.current_features_input
         )
-        # Connect convergence flag
+        
+        # Connect convergence flag from IBVS controller to state machine
         builder.Connect(
             ibvs_controller.converged_output,
             state_machine.converged_input
         )
-        # Connect desired features from state machine
+        
+        # Connect desired features from state machine to IBVS controller
         builder.Connect(
             state_machine.desired_features_output,
             ibvs_controller.desired_uv_input
         )
+        
+        # Connect desired features to visualizer for error visualization
+        builder.Connect(
+            state_machine.desired_features_output,
+            camera_visualizer.desired_features_input
+        )
+        
+        # Connect DOF mask from state machine to IBVS controller (dynamic control)
+        builder.Connect(
+            state_machine.dof_mask_output,
+            ibvs_controller.dof_mask_input
+        )
     else:
-        # Use simple desired features source (current implementation)
+        # Use simple desired features source (fallback, no state machine)
         desired_features = builder.AddSystem(DesiredFeaturesSource(N_features=N_features))
         builder.Connect(
             desired_features.get_output_port(0),
             ibvs_controller.desired_uv_input
+        )
+        
+        # Connect desired features to visualizer for error visualization
+        builder.Connect(
+            desired_features.get_output_port(0),
+            camera_visualizer.desired_features_input
         )
     
     # Add depth estimator with EMA filtering (following real-world patterns)

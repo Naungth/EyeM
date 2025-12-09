@@ -65,6 +65,12 @@ class CameraFeatureVisualizer(LeafSystem):
             size=2 * N_features
         )
         
+        # Optional input port for state name (for state display)
+        self.state_name_input = self.DeclareAbstractInputPort(
+            "state_name",
+            AbstractValue.Make("")
+        )
+        
         # Output port: visualized image (optional, for display)
         self.visualized_output = self.DeclareAbstractOutputPort(
             "visualized_image",
@@ -81,20 +87,20 @@ class CameraFeatureVisualizer(LeafSystem):
         )
     
     def _get_image_and_features(self, context):
-        """Helper to get image, current features, and desired features from inputs."""
+        """Helper to get image, current features, desired features, and state name from inputs."""
         # Get input image
         image_value = self.image_input.Eval(context)
         
         # Convert to numpy array
         if isinstance(image_value, ImageRgba8U):
             if image_value.size() == 0:
-                return None, None, None
+                return None, None, None, None
             
             image_array = np.array(image_value.data).reshape(
                 image_value.height(), image_value.width(), 4
             )[:, :, :3]  # Drop alpha channel, keep RGB
         else:
-            return None, None, None
+            return None, None, None, None
         
         # Get current features
         features_flat = self.features_input.Eval(context)
@@ -109,30 +115,42 @@ class CameraFeatureVisualizer(LeafSystem):
             # Desired features not connected, that's okay
             pass
         
-        return image_array, features, desired_features
+        # Get state name (optional - may not be connected)
+        state_name = None
+        try:
+            raw_state = self.state_name_input.Eval(context)
+            raw_state = raw_state.get_value() if hasattr(raw_state, "get_value") else raw_state
+            state_str = str(raw_state).strip()
+            if state_str:
+                state_name = state_str
+        except Exception:
+            # State name not connected, that's okay
+            pass
+        
+        return image_array, features, desired_features, state_name
     
     def _visualize(self, context, output):
         """Visualize features on camera image (for output port)."""
-        image_array, features, desired_features = self._get_image_and_features(context)
+        image_array, features, desired_features, state_name = self._get_image_and_features(context)
         
         if image_array is None:
             output.set_value(ImageRgba8U())
             return
         
         # Process and save (reuse the same logic)
-        self._process_and_save(context, image_array, features, desired_features, output)
+        self._process_and_save(context, image_array, features, desired_features, state_name, output)
     
     def _publish_visualization(self, context):
         """Periodic publish event to ensure visualization runs even if output isn't connected."""
-        image_array, features, desired_features = self._get_image_and_features(context)
+        image_array, features, desired_features, state_name = self._get_image_and_features(context)
         
         if image_array is None:
             return
         
         # Process and save (without setting output)
-        self._process_and_save(context, image_array, features, desired_features, None)
+        self._process_and_save(context, image_array, features, desired_features, state_name, None)
     
-    def _process_and_save(self, context, image_array, features, desired_features, output):
+    def _process_and_save(self, context, image_array, features, desired_features, state_name, output):
         """Process image with features and optionally save screenshot."""
         # Convert RGB to BGR for OpenCV drawing
         image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
@@ -215,14 +233,11 @@ class CameraFeatureVisualizer(LeafSystem):
                     cv2.LINE_AA
                 )
         
-        # Display error magnitude in top-left corner
-        if desired_features is not None and valid_error_count > 0:
-            error_text = f"RMS Error: {rms_error:.2f} px"
-            # Draw text with background for better visibility
+        # Display error magnitude in top-left corner (always if desired_features provided)
+        if desired_features is not None:
+            error_text = f"RMS Error: {rms_error:.2f} px" if valid_error_count > 0 else "RMS Error: N/A"
             text_size = cv2.getTextSize(error_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
             text_x, text_y = 10, 30
-            
-            # Draw semi-transparent background rectangle
             overlay = image_bgr.copy()
             cv2.rectangle(
                 overlay,
@@ -232,8 +247,6 @@ class CameraFeatureVisualizer(LeafSystem):
                 -1
             )
             cv2.addWeighted(overlay, 0.6, image_bgr, 0.4, 0, image_bgr)
-            
-            # Draw error text
             cv2.putText(
                 image_bgr,
                 error_text,
@@ -244,6 +257,32 @@ class CameraFeatureVisualizer(LeafSystem):
                 2,
                 cv2.LINE_AA
             )
+
+        # Display current state (top-right corner) always (falls back to N/A)
+        state_text = f"State: {state_name if state_name else 'N/A'}"
+        h, w = image_bgr.shape[:2]
+        text_size = cv2.getTextSize(state_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+        text_x = w - text_size[0] - 10
+        text_y = 30
+        overlay = image_bgr.copy()
+        cv2.rectangle(
+            overlay,
+            (text_x - 5, text_y - text_size[1] - 5),
+            (text_x + text_size[0] + 5, text_y + 5),
+            (0, 0, 0),
+            -1
+        )
+        cv2.addWeighted(overlay, 0.6, image_bgr, 0.4, 0, image_bgr)
+        cv2.putText(
+            image_bgr,
+            state_text,
+            (text_x, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),  # Bright yellow for visibility
+            2,
+            cv2.LINE_AA
+        )
         
         # Save screenshot if enabled
         if self.save_dir is not None:
@@ -259,7 +298,8 @@ class CameraFeatureVisualizer(LeafSystem):
                 if success:
                     self.last_save_time = current_time
                     n_features = np.sum((features[:, 0] > 0) & (features[:, 1] > 0))
-                    print(f"[VISUALIZER] Saved screenshot: {filename} (features: {n_features})")
+                    state_debug = state_name if state_name else "N/A"
+                    print(f"[VISUALIZER] Saved screenshot: {filename} (features: {n_features}, state: {state_debug})")
                 else:
                     print(f"[VISUALIZER] ERROR: Failed to save screenshot: {filename}")
         
