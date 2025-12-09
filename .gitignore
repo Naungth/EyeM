@@ -1,8 +1,5 @@
-# Python cache
-__pycache__/
-
-# Prototype directory
-prototype/
-
-# Camera screenshots
-camera_screenshots/
+/camera_screenshots/
+/env/
+/.venv/
+/env/
+/.venv/

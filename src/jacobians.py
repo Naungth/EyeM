@@ -54,7 +54,7 @@ def solve_ik_qdot(plant, context, Vee_des, ee_frame=None, max_velocity=2.0, enfo
     # Get world frame
     world_frame = plant.world_frame()
     
-    # Compute spatial velocity Jacobian
+    # Compute spatial velocity Jacobian (full plant)
     J_v = plant.CalcJacobianSpatialVelocity(
         context,
         JacobianWrtVariable.kV,
@@ -70,10 +70,23 @@ def solve_ik_qdot(plant, context, Vee_des, ee_frame=None, max_velocity=2.0, enfo
     else:
         J_v_np = np.array(J_v)  # If it's already a numpy array or can be converted
     
-    # Compute pseudoinverse
-    J_pinv = np.linalg.pinv(J_v_np)
+    # Restrict Jacobian to actuated DOFs (order matches actuation input port)
+    actuated_vel_indices = []
+    actuated_pos_indices = []
+    for actuator_index in plant.GetJointActuatorIndices():
+        actuator = plant.get_joint_actuator(actuator_index)
+        joint = actuator.joint()
+        for k in range(joint.num_velocities()):
+            actuated_vel_indices.append(joint.velocity_start() + k)
+        for k in range(joint.num_positions()):
+            actuated_pos_indices.append(joint.position_start() + k)
     
-    # Solve for joint velocities (primary task)
+    J_act = J_v_np[:, actuated_vel_indices]
+    
+    # Compute pseudoinverse on actuated subset
+    J_pinv = np.linalg.pinv(J_act)
+    
+    # Solve for joint velocities (primary task) for actuated DOFs only
     qdot_task = J_pinv @ Vee_des
     
     # Check if primary task is zero (or very small) - if so, disable null-space control
@@ -94,15 +107,18 @@ def solve_ik_qdot(plant, context, Vee_des, ee_frame=None, max_velocity=2.0, enfo
     
     qdot = qdot_task.copy()
     
+    # Get actuated joint positions (used for limits and optional null-space)
+    q_full = plant.GetPositions(context)
+    q = q_full[actuated_pos_indices]
+    
     # Add null-space component to avoid extreme configurations (only if task is active)
     if use_null_space and enforce_position_limits:
         # Null-space projector: (I - J⁺J)
-        num_joints = J_v_np.shape[1]
+        num_joints = J_act.shape[1]
         I = np.eye(num_joints)
-        N = I - J_pinv @ J_v_np  # Null-space projector
+        N = I - J_pinv @ J_act  # Null-space projector
         
         # Null-space velocity: bias joints towards center of their range
-        q = plant.GetPositions(context)
         num_iiwa_joints = min(7, len(q), num_joints)
         
         # Compute desired null-space velocity (bias towards center)
@@ -126,7 +142,14 @@ def solve_ik_qdot(plant, context, Vee_des, ee_frame=None, max_velocity=2.0, enfo
     # Apply joint limits
     qdot_before_limits = qdot.copy()
     qdot_before_mag = np.linalg.norm(qdot_before_limits)
-    qdot = apply_joint_limits(plant, context, qdot, max_velocity, enforce_position_limits)
+    qdot = apply_joint_limits(
+        plant,
+        context,
+        qdot,
+        q_actuated=q,
+        max_velocity=max_velocity,
+        enforce_position_limits=enforce_position_limits,
+    )
     qdot_after_mag = np.linalg.norm(qdot)
     
     # Debug: check if joint limits are modifying zero velocities
@@ -146,7 +169,7 @@ def solve_ik_qdot(plant, context, Vee_des, ee_frame=None, max_velocity=2.0, enfo
     return qdot
 
 
-def apply_joint_limits(plant, context, qdot, max_velocity=2.0, enforce_position_limits=True):
+def apply_joint_limits(plant, context, qdot, q_actuated=None, max_velocity=2.0, enforce_position_limits=True):
     """
     Apply joint velocity and position limits to joint velocities.
     
@@ -169,14 +192,26 @@ def apply_joint_limits(plant, context, qdot, max_velocity=2.0, enforce_position_
             print(f"[APPLY_JOINT_LIMITS] Input qdot is zero (magnitude={input_qdot_mag:.6e})")
             apply_joint_limits._zero_input_warned = True
     
-    # Get current joint positions
-    q = plant.GetPositions(context)
+    # Build actuated position indices to align with qdot
+    actuated_pos_indices = []
+    for actuator_index in plant.GetJointActuatorIndices():
+        actuator = plant.get_joint_actuator(actuator_index)
+        joint = actuator.joint()
+        for k in range(joint.num_positions()):
+            actuated_pos_indices.append(joint.position_start() + k)
     
-    # Get number of actuated joints (for IIWA, this is 7, but plant has 9 total positions)
-    num_actuators = plant.num_actuators()
+    # Get current joint positions for actuated joints
+    if q_actuated is None:
+        q_full = plant.GetPositions(context)
+        q = q_full[actuated_pos_indices]
+    else:
+        q = q_actuated
+    
+    # Get number of actuated joints (e.g., iiwa + wsg)
+    num_actuators = len(qdot)
     
     # Only apply limits to IIWA joints (first 7), not gripper
-    num_iiwa_joints = 7
+    num_iiwa_joints = min(7, num_actuators, len(q))
     
     # IIWA joint limits (from Kuka IIWA14 specifications)
     # Position limits in radians
