@@ -139,9 +139,9 @@ def add_eye_in_hand_camera(
             - image_converter: The CameraImageConverter system
     """
     # Camera pose relative to end-effector
-    # Position camera slightly forward and looking down
-    rpy = RollPitchYaw(0, np.pi/6, 0)  # Pitch down 30 degrees
-    p = np.array([0.05, 0, 0.02]).reshape(3, 1)  # 5cm forward, 2cm up
+    # Position camera forward with no tilt (optical axis aligned to EE +Z)
+    rpy = RollPitchYaw(0.0, 0.0, 0.0)
+    p = np.array([0.05, 0.0, 0.02]).reshape(3, 1)  # 5cm forward, 2cm up
     X_Camera_EE = RigidTransform(rpy, p)
     
     # Create render engine
@@ -217,5 +217,8 @@ def add_eye_in_hand_camera(
         image_converter.depth_input
     )
     
-    return rgbd_sensor, image_converter
+    # Register a tiny cyan box at the camera pose for visualization.
+    # Note: plant is already finalized, so we can't add geometry to the plant.
+    # Instead, return the camera pose so callers can draw via Meshcat.
+    return rgbd_sensor, image_converter, X_Camera_EE
 

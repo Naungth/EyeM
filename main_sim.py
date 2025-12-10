@@ -24,7 +24,10 @@ from pydrake.all import (
     RollPitchYaw,
     Solve,
     ZeroOrderHold,
+    Adder,
+    PublishEvent,
 )
+from pydrake.geometry import Box, Rgba
 from pydrake.multibody.inverse_kinematics import InverseKinematics
 from pydrake.multibody.parsing import ModelDirectives, Parser, ProcessModelDirectives
 
@@ -207,6 +210,7 @@ class JointVelocityController(LeafSystem):
         self.root_context_ref = root_context_ref
         self.twist_input = self.DeclareVectorInputPort("twist", size=6)
         self.qdot_output = self.DeclareVectorOutputPort("qdot", size=plant.num_actuators(), calc=self._calc_qdot)
+        self._dbg_count = 0  # limited debug prints
 
     def _calc_qdot(self, context, output):
         Vee_des = self.twist_input.Eval(context)
@@ -223,6 +227,24 @@ class JointVelocityController(LeafSystem):
             plant_context = self.plant.GetMyContextFromRoot(root_context)
             num_vars = self.plant.num_velocities()  # matches Jacobian columns
             num_actuators = self.plant.num_actuators()
+
+            # Transform desired twist from end-effector frame to world frame.
+            # The incoming twist is expressed in the EE frame; the Jacobian below expects
+            # a spatial velocity expressed in the world frame.
+            X_WE = self.plant.CalcRelativeTransform(plant_context, self.plant.world_frame(), self.ee_frame)
+            R_WE = X_WE.rotation().matrix()
+            p_WE = X_WE.translation()
+            Ad_WE = adjoint_transform(R_WE, p_WE)
+            V_world = Ad_WE @ Vee_des
+
+            # Debug: print a few samples to trace frame transforms
+            if self._dbg_count < 6:
+                print(
+                    f"[JVEC] dbg#{self._dbg_count}: V_cam_in={Vee_des}, V_ee_in={Vee_des}, "
+                    f"V_world={V_world}, p_WE={p_WE}, R_WE[0,0]={R_WE[0,0]:.3f}",
+                    flush=True,
+                )
+                self._dbg_count += 1
 
             J_spatial = self.plant.CalcJacobianSpatialVelocity(
                 plant_context,
@@ -242,10 +264,7 @@ class JointVelocityController(LeafSystem):
                 self.plant.world_frame(),
             )[:2, :num_vars]
 
-            X_WE = self.plant.CalcRelativeTransform(plant_context, self.plant.world_frame(), self.ee_frame)
-            p_WE = X_WE.translation()
-
-            V_des = np.asarray(Vee_des, dtype=float).reshape(-1)
+            V_des = np.asarray(V_world, dtype=float).reshape(-1)
             if V_des.size != J_spatial.shape[0]:
                 print(
                     f"[QP] Warning: V_des size {V_des.size} != J rows {J_spatial.shape[0]}, padding/truncating",
@@ -320,9 +339,9 @@ def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected
     iiwa_model = plant.GetModelInstanceByName("iiwa")
     ee_frame = plant.GetFrameByName("iiwa_link_7", iiwa_model)
 
-    rgbd_sensor, image_converter = add_eye_in_hand_camera(builder, plant, scene_graph, ee_frame)
+    rgbd_sensor, image_converter, X_Camera_EE = add_eye_in_hand_camera(builder, plant, scene_graph, ee_frame)
 
-    N_features = 4
+    N_features = 1  # Single feature: midpoint of cube corners
     feature_tracker = builder.AddSystem(FeatureTracker(N_features=N_features))
     builder.Connect(rgbd_sensor.color_image_output_port(), feature_tracker.image_input)
 
@@ -333,11 +352,23 @@ def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected
     builder.Connect(rgbd_sensor.color_image_output_port(), camera_visualizer.image_input)
     builder.Connect(feature_tracker.features_output, camera_visualizer.features_input)
 
+    # Camera intrinsics (match add_eye_in_hand_camera)
+    width = 640
+    height = 480
+    fov_y = np.pi / 4
+    fy = height / (2.0 * np.tan(fov_y / 2.0))
+    fx = fy  # square pixels assumed
+    cx = width / 2.0
+    cy = height / 2.0
+
     # Add IBVS controller (DOF mask will come from state machine)
     ibvs_controller = builder.AddSystem(
         IBVSController(
             N_features=N_features,
-            lambda_gain=1000.0,
+            lambda_gain= 0.0,  # was 1000.0; lower to avoid overshoot with correct scaling
+            focal_length=fx,
+            cx=cx,
+            cy=cy,
             error_threshold=10.0,  # Base threshold (states can override)
             convergence_window=10,
             dls_lambda=0.01,
@@ -413,35 +444,34 @@ def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected
     builder.Connect(depth_estimator.depth_output, ibvs_controller.depth_input)
 
     use_eye_in_hand_transform = True
-    eih_rx_deg = 0.0
-    eih_ry_deg = 0.0
-    eih_rz_deg = 0.0
-    eih_tx = 0.20
-    eih_ty = 0.0
-    eih_tz = 0.10
 
     if use_eye_in_hand_transform:
-        from transforms import euler_rpy_to_rotation
-
-        R_ee_cam = euler_rpy_to_rotation(np.deg2rad(eih_rx_deg), np.deg2rad(eih_ry_deg), np.deg2rad(eih_rz_deg))
-        t_ee_cam = np.array([eih_tx, eih_ty, eih_tz], dtype=float)
-        R_cam_ee = R_ee_cam.T
-        t_cam_ee = -R_ee_cam.T @ t_ee_cam
-        Ad_cam_ee = adjoint_transform(R_cam_ee, t_cam_ee)
+        # Use the actual camera-on-EE pose from add_eye_in_hand_camera for frame mapping.
+        R_ee_cam = X_Camera_EE.rotation().matrix()
+        t_ee_cam = X_Camera_EE.translation()
+        # Map twist from camera frame to EE frame: use Adjoint of X_EC (EE to Camera).
+        Ad_ee_cam = adjoint_transform(R_ee_cam, t_ee_cam)
 
         class EyeInHandTransform(LeafSystem):
-            def __init__(self, Ad_cam_ee):
+            def __init__(self, Ad_ee_cam):
                 LeafSystem.__init__(self)
-                self.Ad_cam_ee = Ad_cam_ee
+                self.Ad_ee_cam = Ad_ee_cam
                 self.twist_input = self.DeclareVectorInputPort("twist_camera", size=6)
                 self.twist_output = self.DeclareVectorOutputPort("twist_ee", size=6, calc=self._transform)
+                self._dbg_count = 0  # limited debug prints
 
             def _transform(self, context, output):
                 v_cam = self.twist_input.Eval(context)
-                v_ee = self.Ad_cam_ee @ v_cam
+                v_ee = self.Ad_ee_cam @ v_cam
+                if self._dbg_count < 6:
+                    print(
+                        f"[EIH] cam->ee dbg#{self._dbg_count}: v_cam={v_cam}, v_ee={v_ee}",
+                        flush=True,
+                    )
+                    self._dbg_count += 1
                 output.SetFromVector(v_ee)
 
-        eih_transform = builder.AddSystem(EyeInHandTransform(Ad_cam_ee))
+        eih_transform = builder.AddSystem(EyeInHandTransform(Ad_ee_cam))
         builder.Connect(ibvs_controller.velocity_output, eih_transform.twist_input)
         twist_source = eih_transform.twist_output
     else:
@@ -452,12 +482,160 @@ def build_ibvs_diagram(scene_name: str | None = None, detected_uv=None, detected
         JointVelocityController(plant, ee_frame, diagram=None, root_context_ref=root_context_ref)
     )
     builder.Connect(twist_source, joint_vel_controller.twist_input)
-    builder.Connect(joint_vel_controller.qdot_output, plant.get_actuation_input_port())
+
+    # Gravity compensation + torque summation
+    class GravityCompensator(LeafSystem):
+        def __init__(self, plant, root_context_ref):
+            LeafSystem.__init__(self)
+            self.plant = plant
+            self.root_context_ref = root_context_ref
+            self.torque_output = self.DeclareVectorOutputPort(
+                "gravity_torque",
+                size=plant.num_actuators(),
+                calc=self._calc_torque,
+            )
+
+        def _calc_torque(self, context, output):
+            try:
+                root_context = self.root_context_ref[0]
+                if root_context is None:
+                    output.SetFromVector(np.zeros(self.plant.num_actuators()))
+                    return
+                plant_context = self.plant.GetMyContextFromRoot(root_context)
+                g_forces = self.plant.CalcGravityGeneralizedForces(plant_context)
+                # Map to actuators (assumes ordering aligns)
+                n = min(len(g_forces), self.plant.num_actuators())
+                tau = np.zeros(self.plant.num_actuators())
+                tau[:n] = g_forces[:n]
+                output.SetFromVector(tau)
+            except Exception:
+                output.SetFromVector(np.zeros(self.plant.num_actuators()))
+
+    # Convert joint velocities to torques using damping + gravity compensation
+    class VelocityToTorqueConverter(LeafSystem):
+        def __init__(self, plant, root_context_ref, damping=2.0, vel_gain=25.0, torque_limit=60.0):
+            """
+            Tracks desired joint velocities with a simple PD-like torque law:
+                tau = vel_gain * (qdot_des - qdot) - damping * qdot + tau_gravity
+            This is consistent with the IIWA's torque-controlled actuation and avoids
+            fighting the commanded velocities (previous code applied a damping term
+            directly to qdot_des).
+            """
+            LeafSystem.__init__(self)
+            self.plant = plant
+            self.root_context_ref = root_context_ref
+            self.damping = damping
+            self.vel_gain = vel_gain
+            self.torque_limit = torque_limit
+            self.qdot_input = self.DeclareVectorInputPort("qdot", size=plant.num_actuators())
+            self.torque_output = self.DeclareVectorOutputPort(
+                "torque",
+                size=plant.num_actuators(),
+                calc=self._calc_torque,
+            )
+
+            # Pre-compute mapping from actuators to velocity indices for speed/clarity.
+            actuated_indices = []
+            for actuator_index in self.plant.GetJointActuatorIndices():
+                actuator = self.plant.get_joint_actuator(actuator_index)
+                joint = actuator.joint()
+                for k in range(joint.num_velocities()):
+                    actuated_indices.append(joint.velocity_start() + k)
+            self._actuated_indices = actuated_indices[: self.plant.num_actuators()]
+
+        def _calc_torque(self, context, output):
+            try:
+                root_context = self.root_context_ref[0]
+                if root_context is None:
+                    output.SetFromVector(np.zeros(self.plant.num_actuators()))
+                    return
+
+                plant_context = self.plant.GetMyContextFromRoot(root_context)
+                qdot_des = np.asarray(self.qdot_input.Eval(context)).flatten()
+
+                num_actuators = self.plant.num_actuators()
+                if qdot_des.size < num_actuators:
+                    qdot_des = np.pad(qdot_des, (0, num_actuators - qdot_des.size))
+                elif qdot_des.size > num_actuators:
+                    qdot_des = qdot_des[:num_actuators]
+
+                # Current joint velocities for the actuated joints (IIWA is fixed-base).
+                qdot_full = self.plant.GetVelocities(plant_context)
+                qdot_current = np.zeros(num_actuators)
+                for i, vel_idx in enumerate(self._actuated_indices):
+                    if vel_idx < len(qdot_full):
+                        qdot_current[i] = qdot_full[vel_idx]
+
+                # Velocity tracking torque (positive when desired > current).
+                tau_track = self.vel_gain * (qdot_des - qdot_current)
+
+                # Viscous damping to keep motion stable.
+                tau_damp = -self.damping * qdot_current
+
+                # Gravity compensation.
+                g_forces = self.plant.CalcGravityGeneralizedForces(plant_context)
+                tau_grav = np.zeros(num_actuators)
+                n = min(len(g_forces), num_actuators)
+                # Compensate gravity: apply equal and opposite joint torques.
+                tau_grav[:n] = -g_forces[:n]
+
+                tau_total = tau_track + tau_damp + tau_grav
+                tau_total = np.clip(tau_total, -self.torque_limit, self.torque_limit)
+
+                output.SetFromVector(tau_total)
+            except Exception:
+                # Fallback: just gravity compensation or zeros if unavailable.
+                try:
+                    root_context = self.root_context_ref[0]
+                    if root_context is not None:
+                        plant_context = self.plant.GetMyContextFromRoot(root_context)
+                        g_forces = self.plant.CalcGravityGeneralizedForces(plant_context)
+                        n = min(len(g_forces), self.plant.num_actuators())
+                        tau = np.zeros(self.plant.num_actuators())
+                        tau[:n] = -g_forces[:n]
+                        output.SetFromVector(tau)
+                    else:
+                        output.SetFromVector(np.zeros(self.plant.num_actuators()))
+                except Exception:
+                    output.SetFromVector(np.zeros(self.plant.num_actuators()))
+
+    vel_to_torque = builder.AddSystem(VelocityToTorqueConverter(plant, root_context_ref, damping=5.0))
+    builder.Connect(joint_vel_controller.qdot_output, vel_to_torque.qdot_input)
+    builder.Connect(vel_to_torque.torque_output, plant.get_actuation_input_port())
 
     from pydrake.all import MeshcatVisualizer, StartMeshcat
 
     meshcat = StartMeshcat()
     MeshcatVisualizer.AddToBuilder(builder, scene_graph, meshcat)
+
+    class CameraMarkerPublisher(LeafSystem):
+        """Publishes a small cyan box at the camera pose so it is visible in Meshcat."""
+
+        def __init__(self, plant, ee_frame, X_Camera_EE, meshcat, root_context_ref, path="camera_marker"):
+            LeafSystem.__init__(self)
+            self.plant = plant
+            self.ee_frame = ee_frame
+            self.X_Camera_EE = X_Camera_EE
+            self.meshcat = meshcat
+            self.root_context_ref = root_context_ref
+            self.path = path
+            self.box = Box(0.03, 0.02, 0.02)
+            self.meshcat.SetObject(self.path, self.box, Rgba(0.0, 1.0, 1.0, 0.6))
+            self.DeclarePeriodicEvent(period_sec=0.02, offset_sec=0.0, event=PublishEvent(self.DoPublish))
+
+        def DoPublish(self, context, event):
+            # Use the stored root context (set in main) to access the plant context.
+            root_context = self.root_context_ref[0]
+            if root_context is None:
+                return
+            plant_context = self.plant.GetMyContextFromRoot(root_context)
+            X_WE = self.plant.CalcRelativeTransform(
+                plant_context, self.plant.world_frame(), self.ee_frame
+            )
+            X_WC = X_WE @ self.X_Camera_EE
+            self.meshcat.SetTransform(self.path, X_WC.GetAsMatrix4())
+
+    builder.AddSystem(CameraMarkerPublisher(plant, ee_frame, X_Camera_EE, meshcat, root_context_ref))
 
     diagram = builder.Build()
     joint_vel_controller.diagram = diagram
@@ -527,4 +705,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

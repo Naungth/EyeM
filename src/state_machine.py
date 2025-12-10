@@ -57,16 +57,13 @@ class IBVSStateMachine(LeafSystem):
         self._mode_index = self.DeclareAbstractState(
             AbstractValue.Make(initial_state)
         )
+        # Track previous state name as an abstract state (used by some visualizers)
+        self._previous_state_name_index = self.DeclareAbstractState(
+            AbstractValue.Make(initial_state.value)
+        )
         
         # Track convergence time for each state
         self._convergence_start_time_index = self.DeclareDiscreteState(1)  # Time when converged
-        
-        # Track previous state name for detecting state entry (use string comparison)
-        self._previous_state_name_index = self.DeclareDiscreteState(1)  # Store hash of previous state name
-        
-        # Track last status print time (to avoid spamming)
-        self._last_status_print_time = -1.0
-        self._status_print_interval = 1.0  # Print status every 1 second
         
         # Output: desired features (2N vector) - based on current state
         # These outputs only depend on state (read in calc), not inputs, so no direct feedthrough
@@ -92,6 +89,8 @@ class IBVSStateMachine(LeafSystem):
         
         # Periodic update for state transitions (every 0.1 seconds)
         self.DeclarePeriodicUnrestrictedUpdateEvent(0.1, 0.0, self._update_state)
+        # Track last printed state locally to avoid repeated logs
+        self._last_state_logged = None
     
     def _update_state(self, context, state):
         """Update state machine based on current conditions."""
@@ -100,12 +99,6 @@ class IBVSStateMachine(LeafSystem):
         config = get_state_config(current_state)
         
         # Check if this is a new state (first entry)
-        # Use hash of state name for comparison
-        current_state_name_hash = hash(current_state.value)
-        discrete_state = state.get_discrete_state()
-        # Access discrete state values: value() returns a list of arrays/scalars
-        discrete_values = discrete_state.value()
-
         def _get_discrete_scalar(values, idx, default=-1.0):
             """Safely extract scalar from Drake discrete values (array or scalar)."""
             if len(values) <= idx:
@@ -119,36 +112,19 @@ class IBVSStateMachine(LeafSystem):
                 return default
 
         def _get_convergence_start():
+            discrete_state = state.get_discrete_state()
+            discrete_values = discrete_state.value()
             return _get_discrete_scalar(discrete_values, int(self._convergence_start_time_index), default=-1.0)
 
-        previous_state_hash = _get_discrete_scalar(discrete_values, int(self._previous_state_name_index))
-        
-        if previous_state_hash != current_state_name_hash:
+        if self._last_state_logged != current_state.value:
             # New state entered - print entry message
             print(f"[StateMachine] >>> ENTERED STATE: {config.name} ({current_state.value})", flush=True)
             print(f"    Objective: {config.name}", flush=True)
             print(f"    DOF Mask: {config.dof_mask}", flush=True)
             print(f"    Error Threshold: {config.error_threshold} px", flush=True)
-            mutable_discrete_state = state.get_mutable_discrete_state()
-            mutable_discrete_state.set_value(int(self._previous_state_name_index), np.array([float(current_state_name_hash)]))
-        
-        # Periodic status print (every 1 second)
-        if current_time - self._last_status_print_time >= self._status_print_interval:
-            converged = self.converged_input.Eval(context)
-            is_converged = converged[0] > 0.5
-            current_features = self.current_features_input.Eval(context)
-            has_features = np.any(current_features != 0)
-            
-            # Get convergence timer status
-            convergence_start = _get_convergence_start()
-            if convergence_start > 0:
-                time_converged = current_time - convergence_start
-                convergence_status = f"Converged for {time_converged:.2f}s (need {config.convergence_time:.2f}s)"
-            else:
-                convergence_status = "Not converged"
-            
-            print(f"[StateMachine] Current Mode: {config.name} | Features: {'Yes' if has_features else 'No'} | {convergence_status}", flush=True)
-            self._last_status_print_time = current_time
+            self._last_state_logged = current_state.value
+            # Update previous state tracker for downstream consumers
+            state.get_mutable_abstract_state(int(self._previous_state_name_index)).set_value(current_state.value)
         
         # Check if we should transition
         should_transition = False
@@ -249,8 +225,6 @@ class IBVSStateMachine(LeafSystem):
             state.get_mutable_abstract_state(int(self._mode_index)).set_value(next_state)
             # Reset convergence timer
             mutable_discrete_state.set_value(int(self._convergence_start_time_index), np.array([-1.0]))
-            # Update previous state to trigger entry message
-            mutable_discrete_state.set_value(int(self._previous_state_name_index), np.array([-1.0]))  # Set to invalid to trigger entry print
     
     def _calc_desired_features(self, context, output):
         """Compute desired features based on current state."""

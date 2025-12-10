@@ -71,7 +71,8 @@ STATE_CONFIGS = {
     IBVSState.APPROACH: StateConfig(
         name="Approach Target",
         desired_features_fn=lambda ctx, N: _center_features(N),  # Center of image
-        dof_mask=np.array([1, 0, 0, 0, 0, 0]),  # Only forward/backward (vx)
+        # Enable planar translation (vx, vy) so the feature can move horizontally and vertically.
+        dof_mask=np.array([1, 1, 0, 0, 0, 0]),
         error_threshold=15.0,  # pixels
         convergence_time=0.3,
         next_state=IBVSState.CENTER_ON_TARGET,
@@ -136,6 +137,12 @@ def _center_features(N_features: int) -> np.ndarray:
     """Return desired features at center of image."""
     desired_u = 320.0  # Center of 640px image
     desired_v = 240.0  # Center of 480px image
+    
+    # If N_features == 1, return just the center point
+    if N_features == 1:
+        return np.array([desired_u, desired_v])
+    
+    # For N_features > 1, return center with offsets (legacy behavior)
     features = np.zeros(2 * N_features)
     for i in range(N_features):
         features[2*i] = desired_u + (i % 2) * 20  # Slight offset for multiple features
@@ -148,6 +155,12 @@ def _goal_features(N_features: int) -> np.ndarray:
     # Goal: slightly to the right and up (example)
     goal_u = 400.0
     goal_v = 200.0
+    
+    # If N_features == 1, return just the goal point
+    if N_features == 1:
+        return np.array([goal_u, goal_v])
+    
+    # For N_features > 1, return goal with offsets (legacy behavior)
     features = np.zeros(2 * N_features)
     for i in range(N_features):
         features[2*i] = goal_u + (i % 2) * 20

@@ -32,11 +32,13 @@ def adjoint_transform(R: np.ndarray, t: np.ndarray) -> np.ndarray:
     Compute adjoint transform matrix for transforming twists between frames.
     
     Given rotation R and translation t from frame A to frame B:
-        Ad_B^A = [ R      0 ]
-                 [ [t]×R  R ]
+        Ad_B^A = [ R        [t]×R ]
+                 [ 0            R ]
     
-    This transforms a twist in frame B to frame A:
-        v_A = Ad_B^A @ v_B
+    This transforms a twist expressed at frame B's origin into frame A
+    using the twist ordering [v; w] (linear velocity followed by angular).
+    Translation only affects the linear component (shifting the reference
+    point), not the angular component.
     
     Args:
         R: 3x3 rotation matrix
@@ -45,8 +47,8 @@ def adjoint_transform(R: np.ndarray, t: np.ndarray) -> np.ndarray:
     Returns:
         6x6 adjoint transform matrix
     """
-    upper = np.hstack((R, np.zeros((3, 3))))
-    lower = np.hstack((skew(t) @ R, R))
+    upper = np.hstack((R, skew(t) @ R))
+    lower = np.hstack((np.zeros((3, 3)), R))
     return np.vstack((upper, lower))
 
 
@@ -124,4 +126,3 @@ def se3_exp_body(twist6: np.ndarray, dt: float) -> np.ndarray:
     T[:3, 3] = t
     
     return T
-

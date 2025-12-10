@@ -309,7 +309,10 @@ class CameraFeatureVisualizer(LeafSystem):
                     self.last_save_time = current_time
                     n_features = np.sum((features[:, 0] > 0) & (features[:, 1] > 0))
                     state_debug = state_name if state_name else "N/A"
-                    print(f"[VISUALIZER] Saved screenshot: {filename} (features: {n_features}, state: {state_debug})")
+                    print(
+                        f"[VISUALIZER] Saved screenshot: {filename} "
+                        f"(features: {n_features}, state: {state_debug}, RMS Error: {rms_error:.2f} px)"
+                    )
                 else:
                     print(f"[VISUALIZER] ERROR: Failed to save screenshot: {filename}")
         

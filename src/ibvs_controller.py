@@ -31,15 +31,26 @@ class IBVSController(LeafSystem):
         - desired_spatial_velocity: Vector of size 6 (twist: [vx, vy, vz, wx, wy, wz])
     """
     
-    def __init__(self, N_features=4, lambda_gain=1.0, focal_length=320.0, error_threshold=10.0, 
-                 convergence_window=10, dls_lambda=0.01, dof_mask=None):
+    def __init__(
+        self,
+        N_features=4,
+        lambda_gain=1.0,
+        focal_length=320.0,
+        error_threshold=10.0,
+        convergence_window=10,
+        dls_lambda=0.01,
+        dof_mask=None,
+        cx=None,
+        cy=None,
+    ):
         """
         Initialize IBVS controller.
         
         Args:
             N_features: Number of feature points
             lambda_gain: Control gain λ
-            focal_length: Camera focal length in pixels (for image Jacobian)
+            focal_length: Camera focal length in pixels (assumed fx = fy if cx/cy not provided)
+            cx, cy: Principal point in pixels (defaults to center if None)
             error_threshold: Feature error threshold in pixels - if error below this, stop (default: 10.0)
             convergence_window: Number of consecutive frames below threshold to confirm convergence (default: 10)
             dls_lambda: Damped Least Squares regularization parameter (default: 0.01)
@@ -50,7 +61,10 @@ class IBVSController(LeafSystem):
         
         self.N_features = N_features
         self.lambda_gain = lambda_gain
-        self.focal_length = focal_length  # f (assumed fx = fy = f)
+        self.fx = focal_length
+        self.fy = focal_length
+        self.cx = 320.0 if cx is None else float(cx)
+        self.cy = 240.0 if cy is None else float(cy)
         self.error_threshold = error_threshold  # Stop if error below this (pixels)
         self.convergence_window = convergence_window
         self.dls_lambda = dls_lambda  # DLS regularization parameter
@@ -66,6 +80,7 @@ class IBVSController(LeafSystem):
         # Track error history for convergence detection
         self.error_history = []
         self.converged = False
+        self._debug_count = 0  # for limited debug printing
         
         # Output port for convergence flag (for state machine)
         self.converged_output = self.DeclareVectorOutputPort(
@@ -103,43 +118,59 @@ class IBVSController(LeafSystem):
             calc=self._calc_velocity
         )
     
-    def compute_interaction_matrix(self, uv, Z):
+    def compute_interaction_matrix(self, uv, depth_along_optical_axis):
         """
-        Compute the image Jacobian (interaction matrix) L for given features.
-        
-        For a point feature at (u, v) with depth Z, the interaction matrix row is:
-            L_i = [-f/Z,  0,    u/Z,  u*v/f,  -(f²+u²)/f,  v]
-                  [ 0,   -f/Z, v/Z,  (f²+v²)/f, -u*v/f,   -u]
-        
+        Compute the image Jacobian (interaction matrix) L for a camera whose
+        optical axis is +Z (Drake RgbdSensor convention). Pixel coordinates are
+        (u, v) in pixels, depth is along +Z.
+
+        Pixel coordinates are converted to normalized image coordinates using
+        the intrinsics (fx, fy, cx, cy). The interaction matrix is first built
+        in normalized units, then scaled back to pixel units so it matches the
+        pixel-space error we feed in.
+
+        For normalized coordinates (x = (u-cx)/fx, y = (v-cy)/fy):
+            [ẋ]   [ -1/Z   0     x/Z    x*y   -(1 + x^2)    y ] [vx]
+            [ẏ] = [  0    -1/Z   y/Z   1 + y^2   -x*y      -x ] [vy]
+                  [                                  angular terms           ] [vz wx wy wz]^T
+        We scale rows by fx / fy to return to pixel-space Jacobian.
+
         Args:
-            uv: numpy array (N, 2) of feature coordinates [u, v]
-            Z: numpy array (N,) of depth values
-        
+            uv: np.ndarray, shape (N, 2), pixel coordinates
+            depth_along_optical_axis: np.ndarray, shape (N,), depth Z per feature (meters)
+
         Returns:
-            numpy array: (2N, 6) interaction matrix L
+            L: np.ndarray, shape (2N, 6)
         """
         N = len(uv)
         L = np.zeros((2 * N, 6))
-        f = self.focal_length
-        
+
         for i in range(N):
             u, v = uv[i, 0], uv[i, 1]
-            z = Z[i] if Z[i] > 0 else 1e-6  # Avoid division by zero
-            
-            # First row (u-coordinate)
-            L[2*i, 0] = -f / z
-            L[2*i, 2] = u / z
-            L[2*i, 3] = u * v / f
-            L[2*i, 4] = -(f**2 + u**2) / f
-            L[2*i, 5] = v
-            
-            # Second row (v-coordinate)
-            L[2*i + 1, 1] = -f / z
-            L[2*i + 1, 2] = v / z
-            L[2*i + 1, 3] = (f**2 + v**2) / f
-            L[2*i + 1, 4] = -u * v / f
-            L[2*i + 1, 5] = -u
-        
+            Z = depth_along_optical_axis[i] if depth_along_optical_axis[i] > 1e-6 else 1e-6
+            x = (u - self.cx) / self.fx
+            y = (v - self.cy) / self.fy
+
+            # Row for u (image x)
+            L[2 * i, 0] = -1.0 / Z             # vx
+            L[2 * i, 1] = 0.0                  # vy
+            L[2 * i, 2] = x / Z                # vz
+            L[2 * i, 3] = x * y                # wx
+            L[2 * i, 4] = -(1.0 + x * x)       # wy
+            L[2 * i, 5] = y                    # wz
+
+            # Row for v (image y)
+            L[2 * i + 1, 0] = 0.0                # vx
+            L[2 * i + 1, 1] = -1.0 / Z           # vy
+            L[2 * i + 1, 2] = y / Z              # vz
+            L[2 * i + 1, 3] = 1.0 + y * y        # wx
+            L[2 * i + 1, 4] = -x * y             # wy
+            L[2 * i + 1, 5] = -x                 # wz
+
+            # Scale back to pixel units
+            L[2 * i, :] *= self.fx
+            L[2 * i + 1, :] *= self.fy
+
         return L
     
     def compute_twist(self, L, error, lam=None, dof_mask=None):
@@ -216,11 +247,10 @@ class IBVSController(LeafSystem):
         current_uv_2d = current_uv.reshape(self.N_features, 2)
         desired_uv_2d = desired_uv.reshape(self.N_features, 2)
         
-        # Compute error
-        # NOTE: Error is defined as (current - desired)
-        # Control law: v = -λ · L⁺ · error
-        # This should move current towards desired
-        # If robot moves AWAY from features, the error sign might need to be flipped
+        # Compute error (current - desired), standard IBVS convention:
+        #   v = -λ · L⁺ · (s - s*)
+        # Using (current - desired) ensures the sign matches the image Jacobian columns
+        # (e.g., du/dt = -f/Z * vx, so if u is too large, vx will reduce it).
         error = (current_uv_2d - desired_uv_2d).flatten()
         
         # Filter out invalid features (zero coordinates indicate no feature)
@@ -267,6 +297,15 @@ class IBVSController(LeafSystem):
         
         # Compute twist with active DOF mask
         v = self.compute_twist(L, valid_error, dof_mask=active_dof_mask)
+
+        # Debug: print a few samples to verify direction
+        if self._debug_count < 5:
+            print(
+                f"[IBVS] err_pix={valid_error} | rms={error_magnitude:.2f} | "
+                f"dof_mask={active_dof_mask} | twist_cam={v}",
+                flush=True,
+            )
+            self._debug_count += 1
         
         # Debug: check if DOF mask is causing zero output
         if np.allclose(v, 0) and not np.allclose(self.dof_mask, 0):
@@ -278,4 +317,3 @@ class IBVSController(LeafSystem):
     def _calc_converged(self, context, output):
         """Output convergence flag (1.0 if converged, 0.0 otherwise)."""
         output.SetFromVector(np.array([1.0 if self.converged else 0.0]))
-

@@ -2,9 +2,7 @@
 Feature Extraction from RGB Images
 
 Implements a Drake LeafSystem that extracts 2D feature points from RGB images
-using OpenCV. Currently uses Shi-Tomasi corner detection for stable features.
-
-Later, this will be extended to track specific object corners (e.g., cube vertices).
+using HSV-based red cube detection. Extracts the 4 corners of the detected red cube.
 """
 
 import cv2
@@ -18,7 +16,8 @@ from pydrake.all import (
 
 class FeatureTracker(LeafSystem):
     """
-    LeafSystem that extracts N feature points from an RGB image.
+    LeafSystem that extracts N feature points from an RGB image by detecting
+    a red cube and extracting its corners.
     
     Input:
         - rgb_image: AbstractValue containing ImageRgba8U or numpy array
@@ -30,24 +29,26 @@ class FeatureTracker(LeafSystem):
     
     def __init__(self, N_features=4, max_corners=100):
         """
-        Initialize feature tracker.
+        Initialize feature tracker for red cube detection.
         
         Args:
-            N_features: Target number of features to extract
-            max_corners: Maximum corners to detect (will select top N_features)
+            N_features: Target number of features to extract (typically 4 for cube corners)
+            max_corners: Not used (kept for compatibility)
         """
         LeafSystem.__init__(self)
         
         self.N_features = N_features
-        self.max_corners = max_corners
         
-        # Shi-Tomasi corner detection parameters
-        self.max_corners_to_detect = max(max_corners, N_features * 2)
-        self.quality_level = 0.01
-        self.min_distance = 10
-        self.block_size = 3
-        self.use_harris = False
-        self.k = 0.04
+        # HSV color ranges for red cube detection
+        # Red wraps around hue=0, so we need two ranges
+        self.hsv_lower1 = np.array([0, 30, 30], dtype=np.uint8)    # Lower red range
+        self.hsv_upper1 = np.array([25, 255, 255], dtype=np.uint8)
+        self.hsv_lower2 = np.array([160, 30, 30], dtype=np.uint8)  # Upper red range (wraparound)
+        self.hsv_upper2 = np.array([180, 255, 255], dtype=np.uint8)
+        
+        # Contour filtering parameters
+        self.min_area_frac = 0.0003  # Minimum contour area as fraction of image area
+        self.center_bias = 0.001      # Weight for favoring contours near image center
         
         # Input port: RGB image (can be AbstractValue or numpy array)
         self.image_input = self.DeclareAbstractInputPort(
@@ -71,7 +72,7 @@ class FeatureTracker(LeafSystem):
     
     def _extract_features(self, image):
         """
-        Extract features from image using Shi-Tomasi corner detection.
+        Extract features from image by detecting red cube and extracting its corners.
         
         Args:
             image: numpy array (H, W, 3) uint8 RGB image
@@ -79,40 +80,68 @@ class FeatureTracker(LeafSystem):
         Returns:
             numpy array: (N, 2) array of [u, v] coordinates, padded to N_features
         """
-        # Convert to grayscale
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image
+        # Convert RGB to HSV
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
         
-        # Detect corners
-        corners = cv2.goodFeaturesToTrack(
-            gray,
-            maxCorners=self.max_corners_to_detect,
-            qualityLevel=self.quality_level,
-            minDistance=self.min_distance,
-            blockSize=self.block_size,
-            useHarrisDetector=self.use_harris,
-            k=self.k
-        )
+        # Create mask for red color (handling hue wraparound)
+        mask1 = cv2.inRange(hsv, self.hsv_lower1, self.hsv_upper1)
+        mask2 = cv2.inRange(hsv, self.hsv_lower2, self.hsv_upper2)
+        mask = cv2.bitwise_or(mask1, mask2)
         
-        if corners is None or len(corners) == 0:
-            # Return zeros if no features found
+        # Clean up mask to reduce noise
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours or len(contours) == 0:
+            # No cube detected - return zeros
             return np.zeros((self.N_features, 2))
         
-        # Convert to (N, 2) format
-        corners = corners.reshape(-1, 2)
+        # Filter by minimum area
+        img_area = image.shape[0] * image.shape[1]
+        area_thresh = max(10, self.min_area_frac * img_area)
+        filtered = [c for c in contours if cv2.contourArea(c) >= area_thresh]
         
-        # Select top N_features by quality (already sorted by quality)
-        n_found = min(len(corners), self.N_features)
-        selected = corners[:n_found]
+        if not filtered:
+            # No valid contours - return zeros
+            return np.zeros((self.N_features, 2))
         
-        # Pad to N_features if needed
-        if n_found < self.N_features:
-            padding = np.zeros((self.N_features - n_found, 2))
-            selected = np.vstack([selected, padding])
+        # Select best contour (largest area, biased toward center)
+        h_img, w_img = image.shape[:2]
+        cX_img = w_img / 2.0
+        cY_img = h_img / 2.0
         
-        return selected
+        def score_contour(c):
+            area = cv2.contourArea(c)
+            M = cv2.moments(c)
+            if M["m00"] == 0:
+                return -np.inf
+            cx = M["m10"] / M["m00"]
+            cy = M["m01"] / M["m00"]
+            dist2 = (cx - cX_img) ** 2 + (cy - cY_img) ** 2
+            return area - self.center_bias * dist2
+        
+        main_contour = max(filtered, key=score_contour)
+        
+        # Get rotated bounding box to extract 4 corners
+        rect = cv2.minAreaRect(main_contour)
+        box_points = cv2.boxPoints(rect)  # Returns 4 corners: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+        
+        # Compute midpoint (centroid) of the 4 corners
+        midpoint = np.mean(box_points, axis=0)  # Shape: (2,) - [u, v]
+        
+        # Return as single feature point (reshape to (1, 2) for consistency)
+        # If N_features > 1, pad with zeros; if N_features == 1, return just the midpoint
+        if self.N_features == 1:
+            return midpoint.reshape(1, 2)
+        else:
+            # For N_features > 1, return midpoint as first feature, pad rest with zeros
+            features = np.zeros((self.N_features, 2))
+            features[0] = midpoint
+            return features
     
     def _calc_features(self, context, output):
         """Compute feature coordinates from input image."""
